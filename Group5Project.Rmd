@@ -1,0 +1,447 @@
+---
+title: "NFL Data Analysis: Taking a look at what affects Expected Points Added (EPA) on pass plays"
+author: " Group 5: Lawrence Ho, Paul Jung"
+date: "2024-12-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### EPA is a statistic that was created to evaluate a team or player's performance relative to expectations.
+
+#### Expected points are based off the notion that not all yards gained in football are of equal value. A gain of 5 yards has many implications depending on the scenario/circumstance regarding the gain and Expected Points are meant to quantify these values.
+
+### The dataset we used for the bulk of our analysis was "plays"
+
+#### Plays has 16124 Observations and 49 features. Within the data, there are columns for what seems like solely identification purposes (ex: gameId, playId, playDescription, etc.), some basic football statistics/categorizations (yardsGained, offensiveFormation, passResult, passLength, etc.), as well as some advanced statistics/categorizations (expectedPointsAdded, timeToThrow, teamwinProbabilities, unblockedPressure, pff_manZone, etc.) 
+
+### For our project, we used EPA as the outcome "grade" of a play and we wanted to focus on team controlled predictors before and during the play.
+
+#### This being said, we avoided features that are "independent" of game decisions made by the teams such as yardLine and gameClock.
+
+
+```{r}
+library(ggplot2)
+library(tidyverse)
+#install.packages("skimr")
+library(skimr)
+library(randomForest)
+library(caret)
+library(class)
+set.seed(123)
+
+##glimpse(plays)
+setwd("~/APPSTAT")
+plays<- read.csv("plays.csv")
+
+```
+
+
+
+## Exploratory analysis
+
+### We are trying to find any clear and obvious relationships between features and Expected Points Added (EPA) on plays.
+
+#### To get an idea of the types of strategies teams are employing, we showed a distribution of intended pass plays vs run plays. We then filtered out the run data to create a passing dataset and began our exploratory analysis. Throughout the exploratory analysis of some features we picked to predict EPA, we noticed there were very few features that were "obviously" correlated to EPA. This being said, we created a new statistic called passDifficulty where we combined all of the features we believed had an effect on the pass into one standardized "score". We determined the weights of certain categories through prior assumptions as well as some exploratory analysis. 
+
+#### Assumption Weights: the dropbackType feature weights were assigned by prior assumptions that making an accurate throw while running is more difficult than making an accurate throw while in a more "stable" position like in a traditional dropback. We are also assuming naturally that the longer the passLength is, the more difficult it is to throw a accurate "successful" ball. For pass location, we assume that throws outside the numbers will be more difficult as the ball travels in the air longer (more chances for the defense to interrupt the offense). For play action, we assume that it’s easier to throw when there’s a designed "fake run play" as opposed to without because it forces a slight hesitation in the defense reacting to the pass. 
+
+#### Exploratory weights: For judging which coverage made throwing a +EPA ball more difficult, we looked at the average EPA of each type of coverage (lower averages->more difficult to find success against ___ coverage). The weights of pff_manZone accurately reflect our findings.For judging the weights on an unblockedPressure, we created boxplots that showed that there tends to be more time to throw if there is no unblockedPressure. We can also use prior knowledge, with unblocked pressure, the longer the quarterback holds the ball, the more difficult the throw will be (as there’s a free rusher running straight to the quarterback), hence a greater weight being applied to normalizedTimeToThrow.
+ 
+### The computation of passDifficulty was:
+#### Pressure Adjustment (0.6 or 0.05) × Norm Time to Throw+Defensive Coverage (0.3(Man), 0.35(Zone), .6(Other))+Pass Length (0.6 × Norm Pass Length)+Dropback Type Weight+Pass Location Weight+Play Action Adjustment (0.4 or 0.6). We then normalized this statistic with (x-mean(passDifficulty))/sd(passDifficulty). We ended up also running a simple regression between normPassDifficulty and EPA to see whether there is a more obvious relationship but we ended up observing yet another seemingly no obvious correlation between the two variables.
+
+### Imputation of missing values
+#### During the calculation of the mean and standard deviation of passDifficulty, columns with NA values of passDifficulty were ignored and replaced with the average pass difficulty. Missing receiverAlignments, offensiveFormations, and quarters were imputed with the median of their respective columns as well. 
+
+
+```{r}
+
+## More passing than running in the NFL
+
+ggplot(data = plays, mapping = aes(x = isDropback, ))+geom_bar()+labs(x="isPass")
+
+## Decided to work with pass data
+plays <- plays %>% select(-penaltyYards)
+#glimpse(plays)
+pass_data <- plays %>% filter(isDropback == TRUE) %>% select(-pff_runConceptPrimary)%>%
+  select(-pff_runConceptSecondary)%>%select(-pff_runPassOption)%>%select(-rushLocationType)%>%select(-qbSpike)%>%
+  select(-qbKneel)%>%select(-qbSneak)%>%mutate(timeToSack=replace_na(0))
+
+pass_data<- drop_na(pass_data)
+
+## Teams are employing play action within their 
+ggplot(data = pass_data, mapping = aes(x = playAction, ))+geom_bar()
+
+## No obvious correlation between time to throw and yards gained
+ggplot(data = pass_data, mapping = aes(x = timeToThrow, y=passLength, colour = playAction))+geom_jitter()+geom_smooth()
+cor(plays$timeToThrow, plays$passLength)
+
+
+ggplot(data = pass_data, mapping = aes(x = offenseFormation, y= expectedPointsAdded))+geom_boxplot()
+
+ggplot(data = pass_data, mapping = aes(x = receiverAlignment, y= expectedPointsAdded))+geom_boxplot()
+exploratory1<- lm(formula = expectedPointsAdded~offenseFormation, data = pass_data )
+summary(exploratory1)
+
+
+
+
+exploratory2<- lm(formula = expectedPointsAdded~receiverAlignment, data = pass_data )
+summary(exploratory2)
+
+
+ggplot(data = pass_data, aes(x = pff_passCoverage, y = expectedPointsAdded, fill = pff_passCoverage)) +
+  geom_boxplot() +
+  labs(
+    title = "Expected Points Added by Pass Coverage",
+    x = "Pass Coverage",
+    y = "Expected Points Added",
+    fill = "Pass Coverage" 
+  ) +
+  theme(
+    legend.position = "right",        
+    axis.text.x = element_text(angle = 45, hjust = 1) 
+  )
+exploratory3<- lm(formula = expectedPointsAdded~pff_passCoverage, data = pass_data )
+summary(exploratory3)
+
+
+exploratory4<- lm(formula = expectedPointsAdded~pff_manZone, data = pass_data)
+summary(exploratory4)
+
+cor(x = pass_data$expectedPointsAdded, y = pass_data$quarter)
+ggplot(data = pass_data, mapping = aes(x=as.factor(quarter), y=expectedPointsAdded))+geom_boxplot()
+  
+## Exploring type of coverage's effect on relative success of a play (EPA)
+ggplot(data = pass_data, aes(x = pff_manZone, y = expectedPointsAdded,)) +
+  geom_boxplot()
+epa_by_cov <- pass_data %>%
+  group_by(pff_manZone) %>%
+  summarise(
+    mean_epa = mean(expectedPointsAdded, na.rm = TRUE),
+  )
+epa_by_cov %>%drop_na()%>%
+  arrange(mean_epa)
+
+
+
+
+
+## Explore pressure time to throw
+
+ggplot(data = pass_data, mapping = aes(x = factor(unblockedPressure), y = timeToThrow, colour = unblockedPressure)) +
+  geom_boxplot() 
+  
+timexpressure<- lm(data = pass_data, formula = timeToThrow~unblockedPressure, )
+summary(timexpressure)
+
+
+## Engineering the statistic passData
+
+pass_data2<- pass_data%>%
+  mutate(
+    normPassLength= ((passLength-mean(passLength))/sd(passLength)),
+    normtimeToThrow = ((timeToThrow-mean(timeToThrow)/sd(timeToThrow))),
+    normtimeInBox= ((timeInTackleBox-mean(timeInTackleBox))/sd(timeInTackleBox)),
+    manZone= (ifelse(pff_manZone=="Man", 0.3, ifelse(pff_manZone=="Other", 0.6, ifelse(pff_manZone == "NA", NA, 0.35)))),
+    normdropbackDistance = ((dropbackDistance-mean(dropbackDistance)/sd(dropbackDistance)))
+  )
+#colSums(is.na(pass_data2))
+pass_data2<- pass_data2%>% mutate(
+  passDifficulty =
+      ifelse(unblockedPressure==TRUE, .6*normtimeToThrow, .05*normtimeToThrow)+
+      ifelse(manZone==1, .6, .4)+
+    0.6*normPassLength+
+    ifelse(dropbackType=="TRADITIONAL", .2, 
+           ifelse(dropbackType=="SCRAMBLE", .5, ifelse(dropbackType=="DESIGNED_ROLLOUT_RIGHT", .3, 
+           ifelse("DESIGNED_ROLLOUT_LEFT", .35, 
+           ifelse(dropbackType=="SCRAMBLE_ROLLOUT_RIGHT", .5, ifelse(dropbackType=="SCRAMBLE_ROLLOUT_LEFT", .55, 0))))))+
+    ifelse(passLocationType=="INSIDE_BOX", .5, ifelse(passLocationType=="OUTSIDE_LEFT", .7, ifelse(passLocationType== "OUTSIDE_RIGHT", .7, 0)))+
+    ifelse(playAction=="FALSE", .6, ifelse(playAction=="TRUE", .4, 0))
+  
+
+  )
+
+#glimpse(pass_data2)
+#colSums(is.na(pass_data2))
+pass_data2<- pass_data2%>%mutate(
+  normpassDiff=(passDifficulty-mean(passDifficulty,  na.rm = TRUE))/sd(passDifficulty,  na.rm = TRUE)
+)
+#print(table(pass_data2$quarter))
+
+## Impute NA 
+pass_data2 <- pass_data2 %>%
+  mutate(
+    offenseFormation = ifelse(
+      is.na(offenseFormation), 
+      as.character(names(which.max(table(offenseFormation, useNA = "SHOTGUN")))), 
+      offenseFormation
+    ),
+    receiverAlignment = ifelse(
+      is.na(receiverAlignment), 
+      as.character(names(which.max(table(receiverAlignment, useNA = "2x2")))), 
+      receiverAlignment
+    ),
+    quarter = ifelse(
+      is.na(quarter), 
+      median(quarter, na.rm = TRUE), 
+      quarter
+    ),
+    passDifficulty = ifelse(
+      is.na(passDifficulty), 
+      mean(passDifficulty, na.rm = TRUE), 
+      passDifficulty
+    )
+  )
+#colSums(is.na(pass_data2))
+pass_data2<- pass_data2%>%mutate(
+  normpassDiff=(passDifficulty-mean(passDifficulty,  na.rm = TRUE))/sd(passDifficulty,  na.rm = TRUE)
+)
+
+#colSums(is.na(pass_data2))
+
+## Analyze whether there is a direct relationship
+explore6<-lm(formula = expectedPointsAdded~normpassDiff, data = pass_data2,)
+summary(explore6)
+ggplot(data = pass_data2, mapping = aes(x=normpassDiff, y=expectedPointsAdded))+geom_jitter()+geom_smooth(se=FALSE)
+
+
+```
+
+
+### RandomForest 1- Predicting numerical EPA using each individual predictor.
+
+####   The variable importance plot shows that the most influential feature is the "passDifficulty" statistic. A lot of features like unblockedPressure, passLocationType, dropbackType, offenseFormation, and manZone seem very insignificant towards the predictive power of the model. The residuals are not really normally distributed either as shown in the residual plot. The overall Root Mean Squared Error is around 0.968.
+```{r}
+
+
+predictors <- pass_data[, c("passLength", "passResult", "passLocationType", "dropbackType", "dropbackDistance", "timeToThrow", "timeInTackleBox", "offenseFormation", "receiverAlignment", "quarter", "unblockedPressure", "pff_passCoverage", "pff_manZone")]  # Select predictor columns
+response <- pass_data$expectedPointsAdded  # Define the response variable
+#rf_model <- randomForest(x = predictors, y =plays$response, )
+
+#ggplot(data = plays, mapping = aes(x = yardsGained, y = expectedPointsAdded, colour = offenseFormation))+geom_point()+geom_smooth(se=FALSE)
+
+splitIndex <- createDataPartition(pass_data$expectedPointsAdded, p = 0.8, list = FALSE)
+train_data <- pass_data[splitIndex, c("passLength", "passResult", "passLocationType", "dropbackType", 
+                                      "dropbackDistance", "timeToThrow", "timeInTackleBox", "offenseFormation", 
+                                      "receiverAlignment", "quarter", "unblockedPressure", "pff_passCoverage", "pff_manZone")]  # Select predictors for training
+
+train_out <- pass_data$expectedPointsAdded[splitIndex] 
+
+#glimpse(train_data)
+#glimpse(train_out)
+#glimpse(train_data)
+test_data <- pass_data[-splitIndex, c("passLength", "passResult", "passLocationType", "dropbackType", 
+                                      "dropbackDistance", "timeToThrow", "timeInTackleBox", "offenseFormation", 
+                                      "receiverAlignment", "quarter", "unblockedPressure", "pff_passCoverage", "pff_manZone")]
+
+test_out <- pass_data$expectedPointsAdded[-splitIndex]
+
+
+dim(train_data)
+dim(test_data)
+
+
+
+rf_model <- randomForest(x = train_data, y =train_out, proximity = TRUE)
+Y_pred = predict(rf_model, test_data, type="response")
+ rf_err = sqrt( mean( (Y_pred - test_out)^2 ))
+print(rf_err)
+
+varImpPlot(rf_model)
+
+residuals_data <- data.frame(
+  Predicted = Y_pred,
+  Residuals = test_out - Y_pred
+)
+
+# Plot using ggplot
+ggplot(residuals_data, aes(x = Predicted, y = Residuals)) +
+  geom_point(color = "blue", alpha = 0.6) +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "Residuals vs Predicted",
+    x = "Predicted Values",
+    y = "Residuals"
+  ) +
+  theme_minimal()
+```
+
+### RandomForest 2- Predicting numerical EPA using the normPassDifficulty statistic.
+
+#### We randomly select the training and test data with a 80/20 split and run another randomForest algorithm. The variable importance plot shows that the most influential feature is the "passDifficulty" statistic. The residuals are not really normally distributed with a overall Root Mean Squared Error of around 1.55. The error is heavily right skewed as shown in a the histogram of the Root Mean Squared Error.
+```{r}
+
+splitIndex <- createDataPartition(pass_data2$expectedPointsAdded, p = 0.8, list = FALSE)
+
+train_data2 <- pass_data2[splitIndex, c("offenseFormation", "receiverAlignment", "quarter", "normpassDiff")]
+test_data2 <- pass_data2[-splitIndex, c("offenseFormation", "receiverAlignment", "quarter", "normpassDiff")]
+train_out2 <- pass_data2$expectedPointsAdded[splitIndex]
+test_out2 <- pass_data2$expectedPointsAdded[-splitIndex]
+
+# Verify dimensions of training and testing datasets
+cat("\nTrain set dimensions (predictors only):\n")
+print(dim(train_data))
+
+cat("\nTest set dimensions (predictors only):\n")
+print(dim(test_data))
+
+# Build the random forest model
+
+rf_model2 <- randomForest(
+  x = train_data2, 
+  y = train_out2, 
+  proximity = TRUE, 
+  importance = TRUE
+)
+varImpPlot(rf_model2)
+Y_pred2 <- predict(rf_model2, newdata = test_data2)
+rf_err2 <- sqrt(mean((Y_pred2 - test_out2)^2))
+print(rf_err2)
+ #colSums(is.na(pass_data2))
+residuals_data2 <- data.frame(
+  Predicted = Y_pred2,
+  Residuals = test_out2 - Y_pred2
+)
+
+# Plot using ggplot
+ggplot(residuals_data2, aes(x = Predicted, y = Residuals)) +
+  geom_point(color = "blue", alpha = 0.6) +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "Residuals vs Predicted",
+    x = "Predicted Values",
+    y = "Residuals"
+  ) +
+  theme_minimal()
+## MSE distribution
+hist(rf_model2$mse, main = "Error Distribution", xlab = "MSE")
+```
+
+### RandomForest 3- Predicting categorizations of EPA using the same features.
+
+#### I found the Q1 and Q3 of EPA in the filtered pass data and assigned anything under Q1 being a "Low" EPA and anything above is Q3. These categories are distributed as shown in the bargraph. We randomly select the training and test data with a 80/20 split and run another randomForest algorithm. The model has a accuracy of 0.7036. The variable importance plot shows that the most influential feature is the "passDifficulty" statistic.  The model performs very well at identifying "Average" plays but struggles significantly with distinguishing "High" and "Low" plays. There is high sensitivity for "Average", but low sensitivity for "Low" and "High" categorized plays.
+
+```{r}
+## EPA categories
+
+pass_data2%>% summarise(
+  mean = mean(expectedPointsAdded, na.rm = TRUE),
+  median = median(expectedPointsAdded, na.rm = TRUE),
+  sd = sd(expectedPointsAdded, na.rm = TRUE),
+  min = min(expectedPointsAdded, na.rm = TRUE),
+  max = max(expectedPointsAdded, na.rm = TRUE),
+  q1 = quantile(expectedPointsAdded, 0.25, na.rm = TRUE),
+  q3 = quantile(expectedPointsAdded, 0.75, na.rm = TRUE)
+)
+
+pass_data3<- pass_data2%>%mutate(
+  epaGroup= ifelse(expectedPointsAdded>=1.911744, "High", ifelse(expectedPointsAdded<=-0.920628, "Low", "Average"))
+)
+
+ggplot(pass_data3, aes(x = epaGroup, fill = epaGroup)) +
+  geom_bar() +
+  scale_fill_manual(values = c("High" = "blue", "Low" = "red", "Average" = "gray")) +
+  labs(
+    title = "Count of Observations by EPA Group",
+    x = "EPA Group",
+    y = "Count"
+  ) +
+  theme_minimal()
+splitIndex <- createDataPartition(pass_data3$epaGroup, p = 0.8, list = FALSE)
+
+train_data3 <- pass_data3[splitIndex, c("offenseFormation", "receiverAlignment", "quarter", "normpassDiff")]
+test_data3 <- pass_data3[-splitIndex, c("offenseFormation", "receiverAlignment", "quarter", "normpassDiff")]
+train_out3 <- pass_data3$epaGroup[splitIndex]
+test_out3 <- pass_data3$epaGroup[-splitIndex]
+train_out3 <- as.factor(train_out3)
+test_out3 <- as.factor(test_out3)
+
+# Verify dimensions of training and testing datasets
+cat("\nTrain set dimensions (predictors only):\n")
+print(dim(train_data3))
+
+cat("\nTest set dimensions (predictors only):\n")
+print(dim(test_data3))
+
+# Build the random forest model
+
+rf_model3 <- randomForest(x = train_data3, y = train_out3)
+Y_pred3<- predict(rf_model3, test_data3)
+varImpPlot(rf_model3)
+
+confusion_matrix <- table(Predicted = Y_pred3, Actual = test_out3)
+confusionMatrix(confusion_matrix)
+```
+
+
+### KNN Algorithm
+
+#### KNN model was used to predict EPA categories using the same categorical variables as random forest: offenseFormation, receiverAlignment, and quarter. All predictor variables were scaled to standardize their range. This step ensures that no variable dominates due to its scale. This is important to KNN as it is distance based and is sensitive to differing magnitudes. The epaGroup, response variable, was converted into numeric values to be compatible with the KNN algorithm. Odd k values from a range of 1-20 were tested to determine optimal k. Accuracy for each k was calculated on the validation set, and the results were plotted to identify when the accuracy of k falls off. 
+
+#### The optimal K was 19 and this was found by maximizing accuracy. The optimized accuracy we found in the confusion matrix was 0.7011 but the Baseline accuracy is 0.7024 C1- Average, C2- High, C3-Low. The model performs well in identifying Class 1 instances, as seen in its high sensitivity. Class 2 and Class 3 have lower sensitivity, indicating that the model struggles to correctly classify these observations. The overall accuracy is close to the baseline No Information Rate, suggesting limited improvement in performance.
+
+
+```{r}
+#library(caret)
+
+
+# Ensure all predictors are numeric and scale them
+knn_train_data <- train_data3 %>%
+  mutate(
+    offenseFormation = as.numeric(factor(offenseFormation)),
+    receiverAlignment = as.numeric(factor(receiverAlignment)),
+    quarter = as.numeric(quarter)
+  ) %>%
+  scale() %>%
+  as.data.frame()
+
+knn_test_data <- test_data3 %>%
+  mutate(
+    offenseFormation = as.numeric(factor(offenseFormation)),
+    receiverAlignment = as.numeric(factor(receiverAlignment)),
+    quarter = as.numeric(quarter)
+  ) %>%
+  scale() %>%
+  as.data.frame()
+
+# Convert output variable to numeric factors for KNN
+train_out_knn <- as.numeric(factor(train_out3)) # Convert to numeric
+test_out_knn <- as.numeric(factor(test_out3))   # Convert to numeric
+
+# Find the optimal value of k using cross-validation
+k_values <- seq(1, 20, by = 2) # Test odd k values
+accuracy <- sapply(k_values, function(k) {
+  pred <- knn(train = knn_train_data, test = knn_test_data, cl = train_out_knn, k = k)
+  mean(pred == test_out_knn) # Calculate accuracy
+})
+
+# Plot accuracy vs. k
+plot(
+  k_values, accuracy, type = "b", col = "blue", pch = 19,
+  xlab = "k", ylab = "Accuracy", main = "Accuracy vs. k"
+)
+
+# Select the optimal k
+optimal_k <- k_values[which.max(accuracy)]
+cat("Optimal k:", optimal_k, "\n")
+
+# Train the final KNN model with optimal k
+knn_predictions <- knn(train = knn_train_data, test = knn_test_data, cl = train_out_knn, k = optimal_k)
+
+# Evaluate the KNN model
+confusion_matrix <- table(Predicted = knn_predictions, Actual = test_out_knn)
+confusionMatrix(confusion_matrix)
+
+```
+
+### Findings and Future Directions:
+#### When merging multiple aspects of the passing, the normpassDiff was the most critical predictor for EPA. Quarter had less influence but still provided context. Predicting the numerical values with the individual features also produces a similar error as the other randomForest models and KNN model. 
+
+#### The randomForest3 model had a very similar performance to the KNN model, both hover around 70% accuracy. It is clear that the "Average" EPA categorization dominated in the dataset, as both model's confusion matrix showed similar specificity values. 
+
+#### For future directions, perhaps choosing more representative cutoffs for EPA groupings could lead to more robust predictions as well as incoorperating more speciic data such as individual player's statistics in the corresponding player_plays.csv dataset. With more variables, perhaps you could find stronger correlations within the data to make better predictions.
+
