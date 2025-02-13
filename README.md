@@ -1,0 +1,2 @@
+Final Project.pdf was done in Spring 2024 where we were using a countries dataset trying to gain insights and make inferences about life expectancy.
+NFL data analysis was done in Fall 2024 where we were taking a closer look at what impacts the advanced statistic EPA and whether there are any trends regarding features before and during the play that can help us create inferences about the success of a play.
